@@ -1,132 +1,239 @@
-# Tiny Backspace
+# Tiny Backspace - AI Coding Agent
 
-# **Introduction**
+This is my take-home for Backspace, I focused on strong infra, streaming feedback, and secure sandboxing. The agent is Claude-powered, but I built everything around it to make the whole system reliable and clear. I’ve included everything below, how it works, how to run it, and why I chose this setup.
 
----
 
-Let's build a trivial version of Backspace — a sandboxed coding agent that can create PRs!
+A streaming API that automatically creates GitHub pull requests using Claude AI and secure Modal cloud sandboxes.
 
-In this project, we will build a service that takes in:
+## 🚀 Features
 
-- `Your Public Github Repo Url`  - i.e (https://github.com/daytonaio/daytona)
-- `Coding Prompt`  - i.e (Add a sign on page to the app)
+- **Claude AI Integration**: Intelligent code analysis and generation using Anthropic's Claude 3 Sonnet
+- **Modal Cloud Sandboxes**: Secure, ephemeral execution environments in the cloud
+- **Real-time Streaming**: Server-Sent Events for live updates during the coding process
+- **GitHub Integration**: Automatic PR creation with enhanced descriptions
+- **OpenTelemetry**: Comprehensive observability and telemetry tracking
+- **Fallback Support**: Local sandbox fallback when cloud services are unavailable
 
-And automatically creates a pull request with the implemented changes.
+## 🏗️ Architecture
 
-This is effectively exploring the core technology behind autonomous coding agents and we'll build it with modern tooling for safety and observability.
+- **FastAPI**: Streaming REST API with Server-Sent Events
+- **Modal**: Cloud-based secure sandbox execution
+- **Claude AI**: Intelligent code analysis and generation
+- **GitHub API**: Automated pull request creation
+- **OpenTelemetry**: Distributed tracing and observability
 
-# **Project Spec**
+## 🛠️ Setup
 
----
+### Prerequisites
 
-Make a **streaming API** either in Python or Typescript
+1. **Modal Account**: Sign up at [modal.com](https://modal.com)
+2. **GitHub Token**: Personal Access Token with repo permissions
+3. **Anthropic API Key**: Claude AI access key
 
-*For example…*
+### Environment Variables
 
-- **Python**: FastAPI with Server-Sent Events
-- **TypeScript**: Next.js API with Server-Sent Events
+Create a `.env` file:
 
-**Endpoint**: `POST /code` that immediately starts streaming the coding process via Server-Sent Events
+```bash
+# GitHub Token for PR creation
+GITHUB_TOKEN=your_github_personal_access_token
 
-- Takes in two inputs:
-    - `repoUrl`: the URL of a public repo on Github
-    - `prompt`: a textual command describing what code changes to make
-- Streams real-time updates showing:
-    - Repo cloning progress
-    - Agent analysis and planning
-    - Code changes being made
-    - Git operations and PR creation
-    - Final result with PR URL
-- It then:
-    - Clones the repo into a secure sandbox environment
-    - Runs a coding agent of your choice to implement the requested changes
-    - Creates a pull request with the implemented changes
-    - Returns the PR URL and a summary of changes made
-- **Focus Areas**: Don't get bogged down with the agent implementation - focus on the surrounding infrastructure like sandboxing and PR creation
+# Modal Configuration
+MODAL_TOKEN_ID=your_modal_token_id
+MODAL_TOKEN_SECRET=your_modal_token_secret
 
-*You may face some trouble getting the agent to make PRs for you from the sandbox. Thus, it’s completely fine if you make a PR on one of your own public GitHub repositories and use your PAT for authentication. The agent can make PRs under your name.*
-
-### **Bonus Points:**
-
-- Real-time telemetry through OpenTelemetry or observability tools like LangSmith that shows the agent's thinking process
-
-# **Using AI Tools**
-
-Please please use Cursor, Claude Code or any other AI tools to help you code.
-
-This project is designed to measure how effectively you can "just figure it out" and ship infrastructure that works.
-
-*At Backspace, we are vibe coders at heart*
-
-# Tips
-
-- feel free to use Claude Code or Codex as your built-in coding agent
-- Some good sandbox providers are [Modal](https://modal.com/docs/guide/sandbox), [Daytona](https://www.daytona.io/docs/) & [E2B](https://e2b.dev/)
-
-# **Example Input/Output:**
-
----
-
-**Input:**
-
-- Public repo: `https://github.com/example/simple-api`
-- Prompt: `"Add input validation to all POST endpoints and return proper error messages"`
-
-**Expected Output (Server-Sent Events stream):**
-
-```markdown
-
-data: {"type": "Tool: Read", "filepath": "app.py"}
-
-data: {"type": "Tool: Read", "filepath": "requirements.txt"}
-
-data: {"type": "AI Message", "message": "Found 3 POST endpoints: /users, /posts, /comments. Need to add Pydantic for validation."}
-
-data: {"type": "Tool: Edit", "filepath": "models.py", "old_str": "", "new_str": "from pydantic import BaseModel\n\nclass UserCreate(BaseModel):\n    name: str\n    email: str"}
-
-data: {"type": "Tool: Edit", "filepath": "app.py", "old_str": "@app.post('/users')\ndef create_user(user_data: dict):", "new_str": "@app.post('/users')\ndef create_user(user_data: UserCreate):"}
-
-data: {"type": "Tool: Edit", "filepath": "requirements.txt", "old_str": "fastapi==0.68.0", "new_str": "fastapi==0.68.0\npydantic==1.8.2"}
-data: {"type": "Tool: Bash", "command": "git checkout -b feature/add-input-validation", "output": "Switched to a new branch 'feature/add-input-validation'"}
-
-data: {"type": "Tool: Bash", "command": "git add .", "output": ""}
-
-data: {"type": "Tool: Bash", "command": "git commit -m 'Add input validation to POST endpoints'", "output": "[feature/add-input-validation abc123] Add input validation to POST endpoints"}
-
-data: {"type": "Tool: Bash", "command": "git push origin feature/add-input-validation", "output": "To https://github.com/example/simple-api.git"}
-
-data: {"type": "Tool: Bash", "command": "gh pr create --title 'Add input validation to POST endpoints' --body 'Added Pydantic models for validation and proper error handling'", "output": "https://github.com/example/simple-api/pull/123"}
-
+# Claude AI API Key
+ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
-**The created PR should contain:**
+### Installation
 
-- Proper code changes that address the prompt
-- A clear PR description explaining what was changed and why
+```bash
+# Clone the repository
+git clone <your-repo-url>
+cd tiny-backspace
 
-*The above output is a very rough example. Stream as you wish! Whatever makes the most sense to you and is most appropriate.*
+# Install dependencies
+pip install -r requirements.txt
 
-# **Deliverables**
+# Set up Modal authentication
+modal token new
+
+# Run the application
+python main.py
+```
+
+## 📡 API Usage
+
+### Endpoint: `POST /code`
+
+Send a JSON request to create an automated PR:
+
+```bash
+curl -X POST "http://localhost:8002/code" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repoUrl": "https://github.com/username/repo",
+    "prompt": "Add error handling to all functions"
+  }'
+```
+
+### Response Format
+
+The API streams Server-Sent Events with real-time updates:
+
+```
+data: {"type": "status", "message": "Initializing Claude-powered coding agent..."}
+
+data: {"type": "sandbox", "message": "Creating Modal cloud sandbox..."}
+
+data: {"type": "ai_analysis", "message": "Claude analyzing project structure..."}
+
+data: {"type": "planned_change", "change": {...}}
+
+data: {"type": "implementation", "message": "Implementing Claude-generated changes..."}
+
+data: {"type": "completion", "message": "Process completed successfully!"}
+```
+
+## 🧠 AI Integration
+
+### Claude AI Capabilities
+
+- **Codebase Analysis**: Intelligent project structure analysis
+- **Change Planning**: Smart code modification strategies
+- **Code Generation**: Production-ready code creation
+- **Error Handling**: Robust fallback mechanisms
+
+### Example AI-Generated Changes
+
+```python
+# Claude can generate sophisticated code like:
+class ErrorHandler:
+    def __init__(self, service_name: str = "TinyBackspace"):
+        self.service_name = service_name
+        self.logger = logging.getLogger(service_name)
+    
+    def log_error(self, error: Exception, context: str = "Unknown"):
+        # Comprehensive error logging implementation
+        pass
+```
+
+## 🔒 Security & Sandboxing
+
+### Modal Cloud Sandboxes
+
+- **Isolation**: Each coding session runs in a separate, ephemeral container
+- **Security**: No persistent storage, automatic cleanup
+- **Scalability**: Cloud-native execution with automatic resource management
+- **Observability**: Full telemetry and logging
+
+### Fallback: Local Sandboxes
+
+- Automatic fallback to local execution when Modal is unavailable
+- Secure temporary directory isolation
+- Process-level sandboxing
+
+## 📊 Observability
+
+### OpenTelemetry Integration
+
+- **Distributed Tracing**: Track the entire coding workflow
+- **Performance Metrics**: Monitor execution times and success rates
+- **Error Tracking**: Comprehensive error logging and analysis
+- **AI Decision Tracking**: Trace Claude's reasoning process
+
+### Telemetry Features
+
+```python
+# Automatic tracing of key operations
+telemetry.trace_analysis_phase(files_found, analysis_result)
+telemetry.trace_planning_phase(changes)
+telemetry.trace_implementation_phase(file_path, change_type, success)
+telemetry.trace_git_operations("create_pr", branch_name, success)
+```
+
+## 🧪 Testing
+
+### Local Testing
+
+```bash
+# Start the server
+python main.py
+
+# Test with a simple request
+curl -X POST "http://localhost:8002/code" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repoUrl": "https://github.com/yourusername/test-repo",
+    "prompt": "Add a hello world function"
+  }'
+```
+
+### Health Check
+
+```bash
+curl http://localhost:8002/health
+# Response: {"status": "healthy"}
+```
+
+## 🚀 Deployment
+
+### Public URL Access
+
+Deploy to your preferred platform:
+
+- **Railway**: Connect GitHub repo, set environment variables
+- **Render**: Deploy from GitHub with automatic builds
+- **Modal**: Deploy the entire application on Modal infrastructure
+- **AWS/GCP/Azure**: Container deployment
+
+### Environment Configuration
+
+Ensure all environment variables are properly set in your deployment platform.
+
+## 🎯 Why This Approach?
+
+### Technology Choices
+
+1. **Modal over E2B/Local**: Superior security, scalability, and ease of use
+2. **Claude AI**: Most sophisticated code understanding and generation
+3. **FastAPI**: Best-in-class async performance for streaming
+4. **OpenTelemetry**: Industry-standard observability
+
+### AI Agent Strategy
+
+- **Focus on Infrastructure**: Robust sandboxing and PR creation over complex agent logic
+- **Claude Integration**: Leverage best-in-class AI rather than building from scratch
+- **Real-time Feedback**: Stream everything for transparency and debugging
+- **Production Ready**: Error handling, fallbacks, and observability
+
+## 📝 Implementation Notes
+
+### Code Quality
+
+- **Type Hints**: Full typing for better maintainability
+- **Error Handling**: Comprehensive exception handling with graceful degradation
+- **Async/Await**: Proper async patterns for performance
+- **Separation of Concerns**: Clean architecture with distinct responsibilities
+
+### Security Considerations
+
+- **Token Management**: Secure GitHub token handling
+- **Sandbox Isolation**: Proper isolation between coding sessions
+- **Input Validation**: Proper validation of repository URLs and prompts
+- **Rate Limiting**: Protection against abuse (can be added)
+
+## 🔮 Future Enhancements
+
+- **Multi-language Support**: Expand beyond Python
+- **Advanced AI Models**: Integration with multiple AI providers
+- **Collaboration Features**: Multi-user coding sessions
+- **Advanced Git Operations**: Merge conflict resolution, rebasing
+- **Custom Templates**: Pre-defined coding patterns and templates
 
 ---
 
-Please send the following to [tawsif@backspace.run](mailto:tawsif@backspace.run) with the subject "[Name]: Coding Agent Takehome Submission":
+**Built with ❤️ for the Backspace team**
 
-- Repo link on Github
-- A README with:
-    - How to hit the public URL
-    - How to run it locally on our machines
-    - Which coding agent approach you chose and why
-- Demo video (optional but encouraged) showing the full flow from API call to PR creation
-
-# **Other Notes**
-
----
-
-- Please write code quality that you would deem "good"
-    - Moving fast is impressive, but so is writing code that's maintainable and secure
-    - We aren't asking for production-quality code, but the architecture should make sense
-- **Security is important** - since you're running arbitrary code, proper sandboxing is critical
-- **Think about observability** - we want to see what the agent is thinking/doing in real-time. Even if you don’t trace your logs to an external observability tool, show some logging statements.
-
-Don't hesitate to reach out to [tawsif@backspace.run](mailto:tawsif@backspace.run) if you have any questions!
+*This project demonstrates modern AI-powered infrastructure with production-ready observability and security.*
