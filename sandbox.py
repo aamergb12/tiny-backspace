@@ -221,60 +221,6 @@ class ModalSandbox:
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': f'Modal command error: {str(e)}'})}\n\n"
     
-    async def execute_command_with_env(self, command: str, workspace_id: str, env_vars: dict = None) -> AsyncGenerator[str, None]:
-        """
-        Execute a shell command with environment variables inside the Modal sandbox.
-        
-        Args:
-            command: Shell command to execute
-            workspace_id: Sandbox identifier
-            env_vars: Dictionary of environment variables
-            
-        Yields:
-            Server-Sent Event formatted strings with command output
-        """
-        yield f"data: {json.dumps({'type': 'command', 'command': command, 'workspace': workspace_id, 'platform': 'modal-cloud'})}\n\n"
-        
-        try:
-            # Prepare environment variables
-            env_string = ""
-            if env_vars:
-                env_string = " ".join([f"{k}={v}" for k, v in env_vars.items()])
-                command = f"{env_string} {command}"
-            
-            # Execute command in Modal sandbox
-            process = self.sandbox.exec("bash", "-c", command)
-            
-            # Stream output in real-time
-            stdout_lines = []
-            stderr_lines = []
-            
-            # Read stdout
-            if process.stdout:
-                for line in process.stdout:
-                    stdout_lines.append(line.rstrip())
-            
-            # Read stderr  
-            if process.stderr:
-                stderr_content = process.stderr.read()
-                if stderr_content:
-                    stderr_lines.append(stderr_content.rstrip())
-            
-            # Wait for completion
-            exit_code = process.wait()
-            
-            # Stream outputs
-            if stdout_lines:
-                stdout_output = '\n'.join(stdout_lines)
-                yield f"data: {json.dumps({'type': 'command_output', 'output': stdout_output, 'exit_code': exit_code})}\n\n"
-            
-            if stderr_lines:
-                stderr_output = '\n'.join(stderr_lines)
-                yield f"data: {json.dumps({'type': 'command_error', 'error': stderr_output, 'exit_code': exit_code})}\n\n"
-                
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': f'Modal command error: {str(e)}'})}\n\n"
-    
     async def read_file(self, file_path: str, workspace_id: str) -> str:
         """
         Read the contents of a file from the Modal sandbox.
@@ -420,8 +366,36 @@ class LocalSandbox:
     
     async def execute_command_with_env(self, command: str, workspace_id: str, env_vars: dict = None) -> AsyncGenerator[str, None]:
         """Execute command with environment variables - same as execute_command for local"""
-        async for update in self.execute_command(command, workspace_id):
-            yield update
+        workspace_path = f"{self.work_dir}/{workspace_id}"
+        
+        yield f"data: {json.dumps({'type': 'command', 'command': command, 'workspace': workspace_id})}\n\n"
+        
+        try:
+            # Add environment variables to the process environment
+            env = os.environ.copy()
+            if env_vars:
+                env.update(env_vars)
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=workspace_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            output = stdout.decode() if stdout else ""
+            error = stderr.decode() if stderr else ""
+            
+            if output:
+                yield f"data: {json.dumps({'type': 'command_output', 'output': output})}\n\n"
+            if error:
+                yield f"data: {json.dumps({'type': 'command_error', 'error': error})}\n\n"
+                
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Command error: {str(e)}'})}\n\n"
     
     async def read_file(self, file_path: str, workspace_id: str) -> str:
         full_path = f"{self.work_dir}/{workspace_id}/{file_path}"

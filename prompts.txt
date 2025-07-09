@@ -1,0 +1,8 @@
+Web Dev
+Create a FastAPI web app with user auth
+
+Data Science + FastAPI
+Create a Python machine learning project for image classification
+
+DevOps
+Create a CLI tool for managing Docker containers with logging

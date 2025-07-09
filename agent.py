@@ -1,11 +1,12 @@
 import os
 import json
 import asyncio
+import time
 from typing import AsyncGenerator, List, Dict
 from sandbox import ModalSandbox, LocalSandbox
 from claude_client import ClaudeCodeAnalyst
 from dotenv import load_dotenv
-from telemetry import telemetry
+from telemetry import telemetry, enhanced_telemetry
 
 load_dotenv()
 
@@ -49,7 +50,7 @@ class CodingAgent:
         """Main process that handles the entire coding workflow with Claude AI and telemetry"""
         
         # Start telemetry session
-        session_span = telemetry.start_coding_session(repo_url, prompt)
+        session_span = enhanced_telemetry.start_coding_session(repo_url, prompt)
         pr_url = None
         
         # Choose sandbox implementation
@@ -62,6 +63,8 @@ class CodingAgent:
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Initializing Claude-powered coding agent...', 'telemetry': {'phase': 'initialization', 'ai_enabled': bool(self.claude), 'sandbox': sandbox_type}})}\n\n"
                 
                 workspace_id = await sandbox.create_workspace(repo_url)
+                # Store workspace_id in sandbox for tool access
+                sandbox.workspace_id = workspace_id
                 
                 # Stream repo cloning with telemetry
                 async for update in sandbox.clone_repo(repo_url, workspace_id):
@@ -95,69 +98,102 @@ class CodingAgent:
                     except:
                         pass
                 
-                # Claude-powered analysis
+                # Step 3: Use Claude's new tools-based approach
                 if self.claude:
-                    yield f"data: {json.dumps({'type': 'ai_analysis', 'message': 'Claude analyzing project structure and patterns...', 'telemetry': {'phase': 'ai_analysis', 'files_analyzed': len(file_contents)}})}\n\n"
+                    yield f"data: {json.dumps({'type': 'ai_analysis', 'message': 'Claude executing complete workflow with tools...', 'telemetry': {'phase': 'tools_execution', 'files_analyzed': len(file_contents), 'tools_enabled': True}})}\n\n"
                     
-                    analysis_result = await self.claude.analyze_codebase(files_found, file_contents)
+                    # Use the new tools-based method that does everything in one go
+                    start_time = time.time()
+                    executed_changes = await self.claude.execute_coding_request(prompt, files_found, file_contents, sandbox)
+                    duration_ms = (time.time() - start_time) * 1000
                     
-                    project_type = analysis_result.get('project_type', 'unknown')
-                    primary_lang = analysis_result.get('primary_language', 'unknown')
-                    yield f"data: {json.dumps({'type': 'ai_insights', 'message': f'Project type: {project_type}, Language: {primary_lang}', 'analysis': analysis_result, 'telemetry': {'insights_generated': True}})}\n\n"
+                    # Enhanced telemetry for Claude tool execution
+                    for change in executed_changes:
+                        enhanced_telemetry.trace_claude_tool_execution(
+                            tool_name=change.get('type', 'unknown'),
+                            input_data={'file_path': change.get('file_path', ''), 'prompt': prompt},
+                            output_data=change,
+                            duration_ms=duration_ms / len(executed_changes) if executed_changes else duration_ms
+                        )
+                        
+                        # Track AI decision making
+                        enhanced_telemetry.trace_ai_decision_making(
+                            decision_point="file_creation",
+                            context={'prompt': prompt, 'files_found': files_found},
+                            reasoning=change.get('reasoning', 'No reasoning provided'),
+                            confidence=0.9  # High confidence for successful tool execution
+                        )
+                    
+                    # Track file quality
+                    for change in executed_changes:
+                        if change.get('content'):
+                            enhanced_telemetry.trace_file_generation_quality(
+                                file_path=change.get('file_path', ''),
+                                content=change.get('content', ''),
+                                metrics={
+                                    'complexity': len(change.get('content', '').split('\n')),
+                                    'readability': 0.8  # Mock score
+                                }
+                            )
+                    
+                    # Stream the results of Claude's tool execution
+                    for change in executed_changes:
+                        description = change.get('description', 'Unknown action')
+                        yield f"data: {json.dumps({'type': 'ai_tool_result', 'message': f'Claude executed: {description}', 'change': change, 'telemetry': {'tool_executed': True, 'ai_powered': True}})}\n\n"
+                    
+                    # Use executed_changes as our changes list
+                    changes = executed_changes
+                    
+                    # Get analysis result from Claude
+                    analysis_result = self.claude.analysis_result or self._fallback_analysis(files_found)
+                    
                 else:
-                    # Fallback analysis without Claude
-                    analysis_result = {
-                        "project_type": "script",
-                        "primary_language": self._detect_primary_language(files_found),
-                        "complexity_level": "simple"
-                    }
-                
-                # Trace analysis phase
-                telemetry.trace_analysis_phase(files_found, analysis_result)
-                
-                # Step 3: Claude-powered change planning
-                yield f"data: {json.dumps({'type': 'planning', 'message': 'Claude AI planning intelligent code changes...', 'telemetry': {'phase': 'planning', 'ai_powered': bool(self.claude)}})}\n\n"
-                
-                if self.claude:
-                    changes = await self.claude.plan_code_changes(prompt, analysis_result, file_contents)
-                    
-                    # Add reasoning to telemetry
-                    for change in changes:
-                        reasoning = change.get('reasoning', 'No reasoning provided')
-                        yield f"data: {json.dumps({'type': 'ai_reasoning', 'message': f'Claude decided: {reasoning}', 'change': change, 'telemetry': {'ai_decision': True}})}\n\n"
-                else:
+                    # Fallback analysis and changes without Claude
+                    analysis_result = self._fallback_analysis(files_found)
                     changes = await self._fallback_plan_changes(prompt, workspace_id, sandbox)
                 
-                # Trace planning phase
+                # Trace analysis and planning phases
+                telemetry.trace_analysis_phase(files_found, analysis_result)
                 telemetry.trace_planning_phase(changes)
                 
-                for change in changes:
-                    yield f"data: {json.dumps({'type': 'planned_change', 'change': change, 'telemetry': {'decision': 'change_planned', 'ai_generated': bool(self.claude)}})}\n\n"
-                
-                # Step 4: Implement Claude's planned changes
-                yield f"data: {json.dumps({'type': 'implementation', 'message': 'Implementing Claude-generated changes...', 'telemetry': {'phase': 'implementation', 'changes_count': len(changes)}})}\n\n"
+                # Step 4: Display what was accomplished
+                yield f"data: {json.dumps({'type': 'implementation', 'message': f'Claude completed {len(changes)} changes using tools', 'telemetry': {'phase': 'implementation_complete', 'changes_count': len(changes)}})}\n\n"
                 
                 for change in changes:
-                    async for update in self._implement_claude_change(change, workspace_id, sandbox):
-                        yield update
+                    yield f"data: {json.dumps({'type': 'completed_change', 'change': change, 'telemetry': {'decision': 'change_completed', 'ai_generated': bool(self.claude)}})}\n\n"
                 
                 # Step 5: Create branch and commit with enhanced commit message
                 yield f"data: {json.dumps({'type': 'git', 'message': 'Creating feature branch...', 'telemetry': {'phase': 'git_operations'}})}\n\n"
                 
-                branch_name = f"feature/{prompt.lower().replace(' ', '-')[:50]}"
+                # Debug: List files before branching
+                async for update in sandbox.execute_command("ls -la", workspace_id):
+                    print(f"FILES BEFORE BRANCH: {update}")
+                    yield update
+                
+                branch_name = f"feature/{prompt.lower().replace(' ', '-')[:50]}-{asyncio.get_event_loop().time():.0f}"
                 async for update in sandbox.execute_command(f"git checkout -b {branch_name}", workspace_id):
                     yield update
                 
                 telemetry.trace_git_operations("create_branch", branch_name, True)
                 
-                # Add and commit changes with enhanced commit message
+                # Debug: List files after branching
+                async for update in sandbox.execute_command("ls -la", workspace_id):
+                    print(f"FILES AFTER BRANCH: {update}")
+                    yield update
+                
+                # Force add all files
                 async for update in sandbox.execute_command("git add .", workspace_id):
                     yield update
                 
+                # Debug: Check what's being committed
+                async for update in sandbox.execute_command("git status", workspace_id):
+                    print(f"COMMIT STATUS: {update}")
+                    yield update
+                
                 # Create detailed commit message
-                commit_message = f"feat: {prompt}\n\nGenerated by Claude AI:\n"
+                commit_message = f"feat: {prompt}\\n\\nGenerated by Claude AI with Tools:\\n"
                 for change in changes[:3]:  # Include up to 3 changes in commit message
-                    commit_message += f"- {change.get('description', 'Code change')}\n"
+                    commit_message += f"- {change.get('description', 'Code change')}\\n"
                 
                 async for update in sandbox.execute_command(f'git commit -m "{commit_message}"', workspace_id):
                     yield update
@@ -170,29 +206,58 @@ class CodingAgent:
                     print("DEBUG: Entering GitHub push section")
                     yield f"data: {json.dumps({'type': 'git', 'message': 'Setting up GitHub authentication...', 'telemetry': {'phase': 'github_integration'}})}\n\n"
                     
+                    # Debug: Check current git status
+                    async for update in sandbox.execute_command("git status", workspace_id):
+                        print(f"GIT STATUS: {update}")
+                        yield update
+                    
+                    # Debug: Check current remote
+                    async for update in sandbox.execute_command("git remote -v", workspace_id):
+                        print(f"GIT REMOTE BEFORE: {update}")
+                        yield update
+                    
                     # Set git remote URL with token for authentication
                     repo_name = repo_url.split('/')[-2:]  # ['username', 'repo']
                     auth_url = f"https://{self.github_token}@github.com/{repo_name[0]}/{repo_name[1]}"
+                    print(f"DEBUG: Setting remote to: https://[TOKEN]@github.com/{repo_name[0]}/{repo_name[1]}")
                     
                     async for update in sandbox.execute_command(f"git remote set-url origin {auth_url}", workspace_id):
+                        print(f"SET REMOTE: {update}")
+                        yield update
+                    
+                    # Debug: Verify remote was set
+                    async for update in sandbox.execute_command("git remote -v", workspace_id):
+                        print(f"GIT REMOTE AFTER: {update}")
                         yield update
                     
                     yield f"data: {json.dumps({'type': 'git', 'message': 'Pushing Claude-generated changes...', 'telemetry': {'phase': 'github_push'}})}\n\n"
                     
-                    # Push branch
+                    # Push branch with detailed output
                     push_success = True
-                    async for update in sandbox.execute_command(f"git push origin {branch_name}", workspace_id):
-                        if '"type": "error"' in update:
+                    push_command = f"git push -u origin {branch_name}"
+                    print(f"DEBUG: Executing push command: {push_command}")
+                    
+                    async for update in sandbox.execute_command(push_command, workspace_id):
+                        print(f"PUSH OUTPUT: {update}")
+                        # More accurate success detection
+                        if '"type": "command_error"' in update:
+                            # Check if it's actually an error or just git's verbose output
+                            if '"exit_code": 0' in update:
+                                # Exit code 0 means success, even if in stderr
+                                pass
+                            elif any(error in update.lower() for error in ['rejected', 'failed', 'error:', 'fatal:']):
+                                push_success = False
+                        elif '"type": "error"' in update:
                             push_success = False
                         yield update
                     
+                    print(f"DEBUG: Push success = {push_success}")
                     telemetry.trace_git_operations("push", branch_name, push_success)
                     
-                    # Authenticate GitHub CLI and create PR
-                    
-                    # Create enhanced PR with Claude details
-                    pr_title = f"🤖 Claude AI: {prompt}"
-                    pr_body = f"""# 🤖 Claude AI Generated Changes
+                    if push_success:
+                        # Create enhanced PR with Claude details
+                        pr_title = f"🤖 Claude AI Tools: {prompt}"
+                        pr_body = f"""# 🤖 Claude AI Generated Changes (Tools-Based)
 
 **User Request:** {prompt}
 
@@ -202,51 +267,59 @@ class CodingAgent:
 - **Complexity:** {analysis_result.get('complexity_level', 'Unknown')}
 - **Sandbox:** {sandbox_type}
 
-## 🛠️ Changes Made
+## 🛠️ Changes Made by Claude Tools
 """
-                    
-                    for i, change in enumerate(changes, 1):
-                        pr_body += f"{i}. **{change.get('file_path', 'Unknown file')}**: {change.get('description', 'No description')}\\n"
-                        if change.get('reasoning'):
-                            pr_body += f"   - *Reasoning: {change.get('reasoning')}*\\n"
-                    
-                    pr_body += f"""
+                        
+                        for i, change in enumerate(changes, 1):
+                            pr_body += f"{i}. **{change.get('file_path', 'Unknown file')}**: {change.get('description', 'No description')}\\n"
+                            if change.get('reasoning'):
+                                pr_body += f"   - *Reasoning: {change.get('reasoning')}*\\n"
+                        
+                        pr_body += f"""
 ## 🚀 Generated by Tiny Backspace AI Agent
-- **AI Model:** Claude 3 Sonnet
+- **AI Model:** Claude 3.5 Sonnet (with Native Tools)
+- **Execution:** Direct tool execution by Claude
 - **Sandbox:** {sandbox_type}
 - **Telemetry:** Full observability enabled
 - **Timestamp:** {asyncio.get_event_loop().time()}
 
-*This PR was automatically generated with intelligent code analysis and planning.*
+*This PR was automatically generated using Claude's native tool execution capabilities.*
 """
-                    
-                    # Create PR using GitHub CLI
-                    yield f"data: {json.dumps({'type': 'git', 'message': 'Creating pull request...', 'telemetry': {'phase': 'create_pr'}})}\n\n"
-                    
-                    async for update in sandbox.execute_command_with_env(
-                        f'gh pr create --title "{pr_title}" --body "{pr_body}" --head {branch_name}',
-                        workspace_id,
-                        {"GITHUB_TOKEN": self.github_token}
-                    ):
-                        # Extract PR URL from output for telemetry
-                        if '"type": "command_output"' in update and 'github.com' in update:
-                            import re
-                            url_match = re.search(r'https://github\.com/[^\s"]+', update)
-                            if url_match:
-                                pr_url = url_match.group(0)
-                        yield update
-                    
-                    telemetry.trace_git_operations("create_pr", branch_name, bool(pr_url))
+                        
+                        # Create PR using GitHub CLI
+                        yield f"data: {json.dumps({'type': 'git', 'message': 'Creating pull request...', 'telemetry': {'phase': 'create_pr'}})}\n\n"
+                        
+                        pr_command = f'gh pr create --title "{pr_title}" --body "{pr_body}" --head {branch_name}'
+                        print(f"DEBUG: Executing PR command: {pr_command[:100]}...")
+                        
+                        async for update in sandbox.execute_command_with_env(
+                            pr_command,
+                            workspace_id,
+                            {"GITHUB_TOKEN": self.github_token}
+                        ):
+                            print(f"PR OUTPUT: {update}")
+                            # Extract PR URL from output for telemetry
+                            if '"type": "command_output"' in update and 'github.com' in update:
+                                import re
+                                url_match = re.search(r'https://github\.com/[^\s"]+', update)
+                                if url_match:
+                                    pr_url = url_match.group(0)
+                            yield update
+                        
+                        telemetry.trace_git_operations("create_pr", branch_name, bool(pr_url))
+                    else:
+                        print("DEBUG: Push failed, skipping PR creation")
+                        yield f"data: {json.dumps({'type': 'error', 'message': 'Push failed, cannot create PR', 'telemetry': {'phase': 'push_failed'}})}\n\n"
                 else:
                     print("DEBUG: No GitHub token found, skipping push")
                     yield f"data: {json.dumps({'type': 'info', 'message': 'No GitHub token configured, skipping PR creation', 'telemetry': {'phase': 'skipped_github'}})}\n\n"
                 
                 # Final success message with Claude attribution
-                final_message = f"Claude AI coding process completed successfully in {sandbox_type}!" if self.claude else f"Coding process completed successfully in {sandbox_type}!"
-                yield f"data: {json.dumps({'type': 'completion', 'message': final_message, 'telemetry': {'phase': 'completion', 'pr_url': pr_url, 'ai_powered': bool(self.claude), 'changes_implemented': len(changes), 'sandbox': sandbox_type}})}\n\n"
+                final_message = f"Claude AI tools-based coding process completed successfully in {sandbox_type}!" if self.claude else f"Coding process completed successfully in {sandbox_type}!"
+                yield f"data: {json.dumps({'type': 'completion', 'message': final_message, 'telemetry': {'phase': 'completion', 'pr_url': pr_url, 'ai_powered': bool(self.claude), 'changes_implemented': len(changes), 'sandbox': sandbox_type, 'tools_used': bool(self.claude)}})}\n\n"
                 
                 # Mark session as successful
-                telemetry.finish_coding_session(True, pr_url)
+                enhanced_telemetry.finish_coding_session(True, pr_url)
                 
             except Exception as e:
                 # Trace the error
@@ -259,8 +332,8 @@ class CodingAgent:
                 # await sandbox.cleanup_workspace(workspace_id)
                 pass
     
-    def _detect_primary_language(self, files: List[str]) -> str:
-        """Detect primary programming language from file extensions"""
+    def _fallback_analysis(self, files: List[str]) -> Dict[str, str]:
+        """Fallback analysis when Claude is not available"""
         language_counts = {}
         for file in files:
             if file.endswith('.py'):
@@ -270,9 +343,15 @@ class CodingAgent:
             elif file.endswith('.ts'):
                 language_counts['typescript'] = language_counts.get('typescript', 0) + 1
         
-        if language_counts:
-            return max(language_counts, key=language_counts.get)
-        return "unknown"
+        primary_language = max(language_counts, key=language_counts.get) if language_counts else "unknown"
+        
+        return {
+            "project_type": "script",
+            "primary_language": primary_language,
+            "frameworks": [],
+            "complexity_level": "simple",
+            "insights": "Basic project structure detected"
+        }
     
     async def _fallback_plan_changes(self, prompt: str, workspace_id: str, sandbox) -> List[Dict]:
         """Fallback planning when Claude is not available"""
@@ -282,54 +361,7 @@ class CodingAgent:
                 "file_path": "README.md",
                 "description": f"Add section about: {prompt}",
                 "reasoning": "Basic documentation update as fallback",
-                "content": f"\n\n## {prompt}\n\nThis feature was added by Tiny Backspace.\n",
+                "content": f"\\n\\n## {prompt}\\n\\nThis feature was added by Tiny Backspace.\\n",
                 "priority": "medium"
             }
         ]
-    
-    async def _implement_claude_change(self, change: Dict, workspace_id: str, sandbox) -> AsyncGenerator[str, None]:
-        """Implement a Claude-planned change with enhanced logic"""
-        
-        change_type = change.get("type", "unknown")
-        file_path = change.get("file_path", "unknown")
-        description = change.get("description", "No description")
-        content = change.get("content", "")
-        
-        yield f"data: {json.dumps({'type': 'file_change', 'message': f'{change_type}: {file_path} - {description}', 'telemetry': {'file': file_path, 'operation': change_type, 'ai_generated': True}})}\n\n"
-        
-        success = True
-        try:
-            if change_type == "create_file":
-                # Create new file with Claude-generated content
-                async for update in sandbox.write_file(file_path, content, workspace_id):
-                    yield update
-                    
-            elif change_type == "modify_file":
-                if file_path == "README.md":
-                    # Append to README
-                    current_content = await sandbox.read_file(file_path, workspace_id)
-                    if current_content.startswith("Error reading file"):
-                        current_content = f"# {workspace_id.replace('local_', '').replace('modal_', '').replace('-', ' ').title()}\n\n"
-                    
-                    new_content = current_content + content
-                    async for update in sandbox.write_file(file_path, new_content, workspace_id):
-                        yield update
-                else:
-                    # For other files, use Claude's content directly
-                    async for update in sandbox.write_file(file_path, content, workspace_id):
-                        yield update
-                        
-            elif change_type == "delete_file":
-                # Delete file (careful with this!)
-                async for update in sandbox.execute_command(f"rm -f {file_path}", workspace_id):
-                    yield update
-            
-        except Exception as e:
-            success = False
-            telemetry.trace_error("file_implementation_error", str(e), {"file": file_path, "change_type": change_type})
-            yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to {change_type} {file_path}: {str(e)}', 'telemetry': {'error': True}})}\n\n"
-        
-        # Trace implementation success/failure
-        telemetry.trace_implementation_phase(file_path, change_type, success)
-        
-        yield f"data: {json.dumps({'type': 'change_complete', 'file': file_path, 'success': success, 'telemetry': {'status': 'completed', 'ai_generated': True}})}\n\n"

@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -8,8 +8,8 @@ load_dotenv()
 
 class ClaudeCodeAnalyst:
     """
-    Claude AI integration for intelligent code analysis and generation.
-    This replaces basic README modifications with actual code understanding and creation.
+    True tools implementation - Claude can directly execute actions
+    instead of just planning them.
     """
     
     def __init__(self):
@@ -24,212 +24,392 @@ class ClaudeCodeAnalyst:
         self.model = "claude-3-5-sonnet-20241022"
         self.max_tokens = 4000
         
-        print(f"Claude AI initialized: {self.model}")
+        # Store file changes for execution
+        self.planned_files = []
+        self.analysis_result = {}
+        self.current_sandbox = None  # Store current sandbox reference
+        
+        # Define tools that Claude can actually execute
+        self.tools = [
+            {
+                "name": "analyze_codebase",
+                "description": "Analyze the structure and content of a codebase",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "project_type": {"type": "string"},
+                        "primary_language": {"type": "string"}, 
+                        "complexity_level": {"type": "string"},
+                        "frameworks": {"type": "array", "items": {"type": "string"}},
+                        "insights": {"type": "string"}
+                    },
+                    "required": ["project_type", "primary_language", "complexity_level", "insights"]
+                }
+            },
+            {
+                "name": "create_file",
+                "description": "Create a new file with specified content",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "description": {"type": "string"}
+                    },
+                    "required": ["file_path", "content", "description"]
+                }
+            },
+            {
+                "name": "modify_file", 
+                "description": "Modify an existing file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "description": {"type": "string"}
+                    },
+                    "required": ["file_path", "content", "description"]
+                }
+            },
+            {
+                "name": "read_file",
+                "description": "Read the contents of a file",
+                "input_schema": {
+                    "type": "object", 
+                    "properties": {
+                        "file_path": {"type": "string"}
+                    },
+                    "required": ["file_path"]
+                }
+            }
+        ]
+        
+        print(f"Claude AI initialized with executable tools: {self.model}")
     
-    async def analyze_codebase(self, files_found: List[str], file_contents: Dict[str, str]) -> Dict[str, Any]:
+    async def execute_coding_request(self, prompt: str, files_found: List[str], file_contents: Dict[str, str], sandbox) -> List[Dict[str, Any]]:
         """
-        Analyze the codebase structure and determine the project type, 
-        languages, frameworks, and patterns.
-        
-        Args:
-            files_found: List of file paths in the repository
-            file_contents: Dictionary mapping file paths to their contents
-            
-        Returns:
-            Analysis results with project insights
+        True tools approach - Claude analyzes, plans, and executes all in one workflow
         """
         
-        # Prepare codebase summary for Claude
+        # Store sandbox reference for tool execution
+        self.current_sandbox = sandbox
+        
         codebase_summary = self._prepare_codebase_summary(files_found, file_contents)
         
-        prompt = f"""
-        Analyze this codebase and provide insights:
+        # Enhanced system prompt that encourages multiple file creation
+        system_prompt = """You are an expert coding assistant with access to tools that can analyze codebases and create/modify files.
 
-        FILES FOUND:
-        {json.dumps(files_found, indent=2)}
+IMPORTANT: You MUST create multiple separate files for a complete implementation. Never put everything in one file.
 
-        FILE CONTENTS:
-        {codebase_summary}
+Your workflow should be:
+1. Use analyze_codebase tool to understand the project
+2. Use create_file tool multiple times to create separate files for different concerns
+3. Follow proper software architecture with separation of concerns
+4. Create at least 3-5 files for any substantial request
 
-        Please analyze and respond with JSON containing:
-        {{
-            "project_type": "web_app|cli_tool|library|script|other",
-            "primary_language": "python|javascript|typescript|other",
-            "frameworks": ["framework1", "framework2"],
-            "complexity_level": "simple|medium|complex",
-            "architecture_pattern": "mvc|microservice|monolith|script|other",
-            "dependencies": ["dep1", "dep2"],
-            "entry_points": ["main.py", "index.js"],
-            "test_files": ["test1.py"],
-            "config_files": ["package.json", "requirements.txt"],
-            "documentation": ["README.md"],
-            "insights": "Brief description of what this project does"
-        }}
+For a Python calculator project, you should create:
+- main.py (entry point)
+- calculator.py (Calculator class)
+- operations.py (math operations)
+- utils.py (helper functions)
+- README.md (documentation)
+
+Always use multiple create_file tool calls - one for each file you need to create."""
+
+        user_prompt = f"""
+        I need you to implement: "{prompt}"
+
+        Current codebase:
+        FILES: {json.dumps(files_found, indent=2)}
+        CONTENTS: {codebase_summary}
+
+        REQUIREMENTS:
+        1. First use analyze_codebase tool
+        2. Then use create_file tool MULTIPLE TIMES to create separate files
+        3. Create at least 3-4 different files with proper separation of concerns
+        4. Each file should have a specific purpose
+        5. Include proper documentation and comments
+
+        Start by analyzing the codebase, then create multiple files one by one.
         """
         
         try:
+            print(f"Sending request to Claude with {len(self.tools)} tools available")
+            
+            # First turn - let Claude analyze
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}]
+                system=system_prompt,
+                tools=self.tools,
+                messages=[{"role": "user", "content": user_prompt}]
             )
             
-            # Parse Claude's JSON response
-            analysis_text = response.content[0].text
+            print(f"Claude response received with {len(response.content)} content blocks")
             
-            # Extract JSON from Claude's response
-            import re
-            json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
-            if json_match:
-                analysis = json.loads(json_match.group(0))
-            else:
-                # Fallback analysis
-                analysis = self._fallback_analysis(files_found)
+            # Execute the tools Claude called in the first turn
+            executed_changes = []
+            messages = [{"role": "user", "content": user_prompt}]
             
-            return analysis
+            # Add assistant's response to conversation
+            assistant_content = []
+            for content_block in response.content:
+                if content_block.type == "text":
+                    assistant_content.append({"type": "text", "text": content_block.text})
+                elif content_block.type == "tool_use":
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": content_block.id,
+                        "name": content_block.name,
+                        "input": content_block.input
+                    })
+                    
+                    # Execute the tool
+                    tool_result = await self._execute_tool(content_block, sandbox)
+                    if tool_result:
+                        executed_changes.append(tool_result)
+            
+            messages.append({"role": "assistant", "content": assistant_content})
+            
+            # Add tool results to conversation
+            tool_results = []
+            for content_block in response.content:
+                if content_block.type == "tool_use":
+                    if content_block.name == "analyze_codebase":
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": content_block.id,
+                            "content": "Analysis complete. Now create the calculator files."
+                        })
+            
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+                
+                # Second turn - ask Claude to create the files
+                follow_up_response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=system_prompt,
+                    tools=self.tools,
+                    messages=messages + [{
+                        "role": "user", 
+                        "content": f"""Now create the actual implementation files for: "{prompt}"
+
+IMPORTANT: Create files with names that are RELEVANT to the request "{prompt}".
+
+For example:
+- If it's about FastAPI → create main.py, auth.py, models.py, routes.py
+- If it's about data science → create analysis.py, visualization.py, data_utils.py
+- If it's about React → create App.jsx, components.jsx, utils.js
+
+DO NOT create generic names like "calculator.py" unless specifically asked for a calculator.
+
+Create 3-4 files with appropriate names using the create_file tool multiple times."""
+                    }]
+                )
+                
+                print(f"Follow-up response received with {len(follow_up_response.content)} content blocks")
+                
+                # Execute tools from second turn
+                for content_block in follow_up_response.content:
+                    if content_block.type == "tool_use":
+                        print(f"Follow-up tool call: {content_block.name}")
+                        tool_result = await self._execute_tool(content_block, sandbox)
+                        if tool_result:
+                            executed_changes.append(tool_result)
+                
+                # Third turn if we still don't have enough Python files
+                python_files = [change for change in executed_changes if change.get('file_path', '').endswith('.py')]
+                created_files = [change.get('file_path', '') for change in executed_changes]
+                
+                print(f"Created files so far: {created_files}")
+                
+                if len(python_files) < 3:
+                    print(f"Only {len(python_files)} Python files created, requesting more relevant files...")
+                    
+                    # Ask Claude to create more files based on the original prompt
+                    additional_response = self.client.messages.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        tools=self.tools,
+                        messages=[{
+                            "role": "user", 
+                            "content": f"""You created {len(python_files)} files so far: {created_files}
+
+For the request: "{prompt}"
+
+Please create 2-3 MORE files that are specifically relevant to this request:
+1. Additional Python files with specific functionality
+2. A comprehensive README.md that explains the project, setup instructions, and usage
+
+Use create_file tool for each additional file with appropriate filenames and content.
+Don't repeat the files you already created."""
+                        }]
+                    )
+                    
+                    for content_block in additional_response.content:
+                        if content_block.type == "tool_use" and content_block.name == "create_file":
+                            print(f"Additional file tool call: {content_block.name}")
+                            tool_result = await self._execute_tool(content_block, sandbox)
+                            if tool_result:
+                                executed_changes.append(tool_result)
+                                print(f"Successfully created additional file: {tool_result['file_path']}")
+                
+                # Always ensure README is created/updated
+                readme_exists = any('README' in change.get('file_path', '').upper() for change in executed_changes)
+                if not readme_exists:
+                    print("No README found, creating comprehensive project documentation...")
+                    
+                    readme_response = self.client.messages.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        tools=self.tools,
+                        messages=[{
+                            "role": "user", 
+                            "content": f"""Update the existing README.md file for the project: "{prompt}"
+
+The README should completely replace the existing content with:
+- Project title and description  
+- Features implemented
+- Installation/setup instructions
+- Usage examples
+- File structure explanation
+- Requirements/dependencies
+
+Files created: {[change.get('file_path') for change in executed_changes]}
+
+Use the modify_file tool with file_path="README.md" to replace the entire README content."""
+                        }]
+                    )
+                    
+                    for content_block in readme_response.content:
+                        if content_block.type == "tool_use" and content_block.name in ["create_file", "modify_file"]:
+                            print(f"README update tool call: {content_block.name}")
+                            tool_result = await self._execute_tool(content_block, sandbox)
+                            if tool_result:
+                                executed_changes.append(tool_result)
+                                print(f"Successfully updated README: {tool_result['file_path']}")
+            
+            print(f"Total executed changes: {len(executed_changes)}")
+            
+            # If no changes were made, use fallback
+            if not executed_changes:
+                print("No tool executions successful, using fallback")
+                executed_changes = self._fallback_changes(prompt, {})
+            
+            return executed_changes
             
         except Exception as e:
-            print(f"Claude analysis error: {e}")
-            return self._fallback_analysis(files_found)
+            print(f"Claude tools execution error: {e}")
+            return self._fallback_changes(prompt, {})
     
-    async def plan_code_changes(self, prompt: str, analysis: Dict[str, Any], file_contents: Dict[str, str]) -> List[Dict[str, Any]]:
-        """
-        Use Claude to intelligently plan what code changes to make based on the user prompt.
+    async def _execute_tool(self, tool_call, sandbox) -> Optional[Dict[str, Any]]:
+        """Execute a tool call that Claude made"""
         
-        Args:
-            prompt: User's request (e.g., "Add error handling")
-            analysis: Codebase analysis results
-            file_contents: Current file contents
+        tool_name = tool_call.name
+        tool_input = tool_call.input
+        
+        print(f"Executing tool: {tool_name} with input: {list(tool_input.keys())}")
+        
+        if tool_name == "analyze_codebase":
+            # Store analysis for later use
+            self.analysis_result = tool_input
+            print(f"Claude analyzed project: {tool_input.get('project_type')} in {tool_input.get('primary_language')}")
+            return None
             
-        Returns:
-            List of planned changes with specific file operations
-        """
-        
-        context = f"""
-        PROJECT ANALYSIS:
-        {json.dumps(analysis, indent=2)}
-
-        CURRENT FILES:
-        {self._prepare_codebase_summary(list(file_contents.keys()), file_contents)}
-
-        USER REQUEST: {prompt}
-        """
-        
-        planning_prompt = f"""
-        Based on this codebase analysis and user request, plan specific code changes.
-
-        {context}
-
-        IMPORTANT: Always create actual code files, not just documentation!
-
-        For the request "{prompt}", you MUST:
-        1. Create a Python .py file with the requested functionality
-        2. Write actual, functional code that implements the feature
-        3. Only add documentation as a secondary change
-
-        Respond with JSON array of changes to make:
-        [
-            {{
+        elif tool_name == "create_file":
+            file_path = tool_input["file_path"]
+            content = tool_input["content"]
+            description = tool_input["description"]
+            
+            print(f"Claude creating file: {file_path} ({len(content)} chars)")
+            
+            # Actually create the file using sandbox
+            workspace_id = getattr(sandbox, 'workspace_id', 'default')
+            try:
+                async for update in sandbox.write_file(file_path, content, workspace_id):
+                    print(f"Sandbox write update: {update[:100]}...")
+                print(f"Successfully created file: {file_path}")
+            except Exception as e:
+                print(f"Error creating file {file_path}: {e}")
+                return None
+            
+            return {
                 "type": "create_file",
-                "file_path": "error_handler.py",
-                "description": "Create Python error handling utility class",
-                "reasoning": "User requested Python error handling utility - creating functional implementation",
-                "content": "# Full Python code here with proper imports, classes, and methods",
+                "file_path": file_path,
+                "description": description,
+                "reasoning": f"Claude created {file_path} using tools",
+                "content": content,
                 "priority": "high"
-            }}
-        ]
-
-        Guidelines:
-        - ALWAYS create .py files for Python requests
-        - Write complete, functional code with proper classes and methods
-        - Include imports, error handling, and logging as requested
-        - Make it production-ready, not placeholder code
-        """
-        
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": planning_prompt}]
-            )
+            }
             
-            # Extract JSON array from Claude's response
-            response_text = response.content[0].text
-            import re
-            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        elif tool_name == "modify_file":
+            file_path = tool_input["file_path"] 
+            content = tool_input["content"]
+            description = tool_input["description"]
             
-            if json_match:
-                planned_changes = json.loads(json_match.group(0))
+            print(f"Claude modifying file: {file_path} ({len(content)} chars)")
+            
+            # Actually modify the file using sandbox
+            workspace_id = getattr(sandbox, 'workspace_id', 'default')
+            try:
+                async for update in sandbox.write_file(file_path, content, workspace_id):
+                    print(f"Sandbox modify update: {update[:100]}...")
+                print(f"Successfully modified file: {file_path}")
+            except Exception as e:
+                print(f"Error modifying file {file_path}: {e}")
+                return None
                 
-                # Validate and enhance the planned changes
-                return self._validate_planned_changes(planned_changes, analysis)
-            else:
-                # Fallback to simple changes
-                return self._fallback_changes(prompt, analysis)
-                
-        except Exception as e:
-            print(f"Claude planning error: {e}")
-            return self._fallback_changes(prompt, analysis)
+            return {
+                "type": "modify_file",
+                "file_path": file_path,
+                "description": description,
+                "reasoning": f"Claude modified {file_path} using tools",
+                "content": content,
+                "priority": "high"
+            }
+            
+        elif tool_name == "read_file":
+            file_path = tool_input["file_path"]
+            
+            # Read file using sandbox
+            workspace_id = getattr(sandbox, 'workspace_id', 'default')
+            try:
+                content = await sandbox.read_file(file_path, workspace_id)
+                print(f"Claude read file: {file_path} ({len(content)} chars)")
+            except Exception as e:
+                print(f"Error reading file {file_path}: {e}")
+            
+            return None  # Reading doesn't create a change
+            
+        return None
     
-    async def generate_code_content(self, file_type: str, description: str, context: Dict[str, Any]) -> str:
-        """
-        Generate actual code content for a specific file.
-        
-        Args:
-            file_type: Type of file to generate (python, javascript, etc.)
-            description: What the code should do
-            context: Project context and requirements
-            
-        Returns:
-            Generated code content
-        """
-        
-        prompt = f"""
-        Generate {file_type} code for: {description}
-
-        Project context:
-        {json.dumps(context, indent=2)}
-
-        Requirements:
-        - Write production-ready, functional code
-        - Include proper error handling
-        - Add helpful comments
-        - Follow best practices for {file_type}
-        - Make it actually work, not just placeholder code
-
-        Return only the code, no markdown formatting or explanations.
-        """
-        
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            return response.content[0].text.strip()
-            
-        except Exception as e:
-            print(f"Claude code generation error: {e}")
-            return self._fallback_code(file_type, description)
+    # Backward compatibility methods for agent.py
+    async def analyze_codebase_with_tools(self, files_found: List[str], file_contents: Dict[str, str]) -> Dict[str, Any]:
+        """Backward compatibility - use the new tools approach"""
+        # This will be called by the new execute_coding_request method
+        return self.analysis_result or self._fallback_analysis(files_found)
+    
+    async def plan_code_changes_with_tools(self, prompt: str, analysis: Dict[str, Any], file_contents: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Backward compatibility - files are already created by tools"""
+        return self.planned_files or self._fallback_changes(prompt, analysis)
     
     def _prepare_codebase_summary(self, files: List[str], contents: Dict[str, str]) -> str:
         """Prepare a concise summary of the codebase for Claude"""
         summary = []
         
-        for file_path in files[:10]:  # Limit to first 10 files to avoid token limits
+        for file_path in files[:10]:
             if file_path in contents:
                 content = contents[file_path]
-                # Truncate long files
                 if len(content) > 1000:
                     content = content[:500] + "\n... (truncated) ..."
-                
                 summary.append(f"=== {file_path} ===\n{content}\n")
         
         return "\n".join(summary)
     
     def _fallback_analysis(self, files: List[str]) -> Dict[str, Any]:
-        """Fallback analysis when Claude fails"""
+        """Fallback analysis when Claude tools fail"""
         languages = set()
         for file in files:
             if file.endswith('.py'):
@@ -244,268 +424,89 @@ class ClaudeCodeAnalyst:
             "primary_language": list(languages)[0] if languages else "unknown",
             "frameworks": [],
             "complexity_level": "simple",
-            "architecture_pattern": "script",
-            "dependencies": [],
-            "entry_points": [],
-            "test_files": [],
-            "config_files": [],
-            "documentation": ["README.md"],
             "insights": "Simple project structure detected"
         }
     
-
     def _fallback_changes(self, prompt: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Fallback changes when Claude planning fails - ALWAYS create actual code files"""
-       
-        # Always create Python files for Python requests
-        if "python" in prompt.lower() or "class" in prompt.lower() or "error" in prompt.lower():
-            return [{
-                "type": "create_file",
-                "file_path": "error_handler.py",
-                "description": f"Create Python implementation: {prompt}",
-                "reasoning": "User requested Python functionality - creating actual code file",
-                "content": self._generate_python_error_handler(prompt),
-                "priority": "high"
-            }]
+        """Smart fallback changes that create files based on the actual prompt"""
+        
+        # Analyze the prompt to determine appropriate files
+        prompt_lower = prompt.lower()
+        
+        if "fastapi" in prompt_lower or "web application" in prompt_lower:
+            return [
+                {
+                    "type": "create_file",
+                    "file_path": "main.py",
+                    "description": f"FastAPI application entry point for {prompt}",
+                    "reasoning": "Main FastAPI application file",
+                    "content": f'"""FastAPI Application: {prompt}"""\n\nfrom fastapi import FastAPI\n\napp = FastAPI(title="{prompt}")\n\n@app.get("/")\ndef read_root():\n    return {{"message": "FastAPI application running"}}\n\nif __name__ == "__main__":\n    import uvicorn\n    uvicorn.run(app, host="0.0.0.0", port=8000)',
+                    "priority": "high"
+                },
+                {
+                    "type": "create_file",
+                    "file_path": "auth.py",
+                    "description": f"Authentication module for {prompt}",
+                    "reasoning": "Authentication logic",
+                    "content": f'"""Authentication module for {prompt}"""\n\nfrom fastapi import HTTPException, Depends\nfrom fastapi.security import HTTPBearer\n\nsecurity = HTTPBearer()\n\ndef authenticate_user(token: str = Depends(security)):\n    # Authentication logic here\n    if not token:\n        raise HTTPException(status_code=401, detail="Authentication required")\n    return {{"user": "authenticated"}}',
+                    "priority": "high"
+                }
+            ]
+        elif "data science" in prompt_lower or "analysis" in prompt_lower:
+            return [
+                {
+                    "type": "create_file",
+                    "file_path": "analysis.py",
+                    "description": f"Data analysis module for {prompt}",
+                    "reasoning": "Data analysis functionality",
+                    "content": f'"""Data Analysis: {prompt}"""\n\nimport pandas as pd\nimport numpy as np\nimport matplotlib.pyplot as plt\n\ndef load_data():\n    """Load and prepare data for analysis"""\n    pass\n\ndef analyze_data():\n    """Perform data analysis"""\n    pass\n\nif __name__ == "__main__":\n    print("Data analysis module ready")',
+                    "priority": "high"
+                },
+                {
+                    "type": "create_file",
+                    "file_path": "visualization.py",
+                    "description": f"Data visualization module for {prompt}",
+                    "reasoning": "Visualization functionality",
+                    "content": f'"""Data Visualization: {prompt}"""\n\nimport matplotlib.pyplot as plt\nimport seaborn as sns\n\ndef create_plots():\n    """Create data visualizations"""\n    pass\n\ndef save_charts():\n    """Save charts to files"""\n    pass',
+                    "priority": "high"
+                }
+            ]
+        elif "react" in prompt_lower or "component" in prompt_lower:
+            return [
+                {
+                    "type": "create_file",
+                    "file_path": "App.jsx",
+                    "description": f"React application for {prompt}",
+                    "reasoning": "Main React component",
+                    "content": f'// React Application: {prompt}\nimport React from "react";\n\nfunction App() {{\n  return (\n    <div className="App">\n      <h1>{prompt}</h1>\n    </div>\n  );\n}}\n\nexport default App;',
+                    "priority": "high"
+                },
+                {
+                    "type": "create_file",
+                    "file_path": "components.jsx",
+                    "description": f"React components for {prompt}",
+                    "reasoning": "Component library",
+                    "content": f'// Components for {prompt}\nimport React from "react";\n\nexport const Button = ({{ children, onClick }}) => (\n  <button onClick={{onClick}}>{{children}}</button>\n);',
+                    "priority": "high"
+                }
+            ]
         else:
-            return [{
-                "type": "create_file", 
-                "file_path": "feature.py",
-                "description": f"Implement {prompt}",
-                "reasoning": "Creating functional code implementation",
-                "content": self._generate_basic_python_file(prompt),
-                "priority": "high"
-            }]
-
-    def _generate_python_error_handler(self, prompt: str) -> str:
-        """Generate actual Python error handler code"""
-        return f'''"""
-    {prompt}
-    Generated by Tiny Backspace AI Agent with Claude AI
-    """
-
-    import logging
-    import sys
-    import traceback
-    from typing import Any, Optional, Dict
-    from datetime import datetime
-
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('error_log.log'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-
-    class ErrorHandler:
-        """
-        Advanced error handling utility class with logging capabilities.
-        Provides comprehensive error tracking, logging, and recovery mechanisms.
-        """
-        
-        def __init__(self, service_name: str = "TinyBackspace"):
-            self.service_name = service_name
-            self.logger = logging.getLogger(service_name)
-            self.error_count = 0
-            self.error_history: Dict[str, int] = {{}}
-        
-        def log_error(self, error: Exception, context: str = "Unknown", 
-                    additional_info: Optional[Dict[str, Any]] = None) -> None:
-            """
-            Log an error with comprehensive details and context.
-            
-            Args:
-                error: The exception that occurred
-                context: Description of where/when the error occurred  
-                additional_info: Optional dictionary with extra context
-            """
-            self.error_count += 1
-            error_type = type(error).__name__
-            
-            # Track error frequency
-            self.error_history[error_type] = self.error_history.get(error_type, 0) + 1
-            
-            # Create detailed error message
-            error_details = {{
-                "timestamp": datetime.now().isoformat(),
-                "service": self.service_name,
-                "error_type": error_type,
-                "error_message": str(error),
-                "context": context,
-                "error_count": self.error_count,
-                "traceback": traceback.format_exc(),
-                "additional_info": additional_info or {{}}
-            }}
-            
-            self.logger.error(f"Error in {{context}}: {{error_details}}")
-        
-        def safe_execute(self, func, *args, **kwargs) -> Optional[Any]:
-            """
-            Execute a function safely with automatic error handling and logging.
-            
-            Args:
-                func: Function to execute safely
-                *args: Positional arguments for the function
-                **kwargs: Keyword arguments for the function
-                
-            Returns:
-                Function result or None if an error occurred
-            """
-            try:
-                result = func(*args, **kwargs)
-                self.logger.info(f"Successfully executed {{func.__name__}}")
-                return result
-            except Exception as e:
-                self.log_error(e, f"safe_execute({{func.__name__}})")
-                return None
-        
-        def handle_critical_error(self, error: Exception, context: str = "Critical") -> None:
-            """
-            Handle critical errors that may require immediate attention.
-            
-            Args:
-                error: The critical exception
-                context: Critical error context
-            """
-            self.log_error(error, f"CRITICAL: {{context}}")
-            
-            # In a real application, you might:
-            # - Send alerts to monitoring systems
-            # - Trigger emergency procedures
-            # - Gracefully shut down systems
-            
-            print(f"🚨 CRITICAL ERROR in {{context}}: {{str(error)}}")
-        
-        def get_error_stats(self) -> Dict[str, Any]:
-            """
-            Get comprehensive error statistics and health metrics.
-            
-            Returns:
-                Dictionary with error statistics and service health info
-            """
-            return {{
-                "service_name": self.service_name,
-                "total_errors": self.error_count,
-                "error_types": self.error_history,
-                "most_common_error": max(self.error_history, key=self.error_history.get) if self.error_history else None,
-                "service_health": "degraded" if self.error_count > 10 else "healthy"
-            }}
-
-    # Example usage and testing
-    if __name__ == "__main__":
-        # Initialize error handler
-        error_handler = ErrorHandler("TinyBackspaceAgent")
-        
-        # Test error logging
-        try:
-            # Simulate an error
-            result = 1 / 0
-        except Exception as e:
-            error_handler.log_error(e, "division_test", {{"operation": "1/0"}})
-        
-        # Test safe execution
-        def risky_function(x, y):
-            if y == 0:
-                raise ValueError("Cannot divide by zero!")
-            return x / y
-        
-        # This will handle the error gracefully
-        safe_result = error_handler.safe_execute(risky_function, 10, 0)
-        print(f"Safe execution result: {{safe_result}}")
-        
-        # Get error statistics
-        stats = error_handler.get_error_stats()
-        print(f"Error statistics: {{stats}}")
-        
-        print("✅ Error handling utility class is working correctly!")
-    '''
-
-    def _generate_basic_python_file(self, prompt: str) -> str:
-        """Generate basic Python file for any request"""
-        return f'''"""
-    {prompt}
-    Generated by Tiny Backspace AI Agent
-    """
-
-    import logging
-    from typing import Any
-
-    logger = logging.getLogger(__name__)
-
-    class FeatureImplementation:
-        """Implementation for: {prompt}"""
-        
-        def __init__(self):
-            self.initialized = True
-            logger.info("Feature initialized successfully")
-        
-        def execute(self) -> Any:
-            """Execute the main feature functionality"""
-            logger.info("Executing feature: {prompt}")
-            return "Feature executed successfully"
-
-    if __name__ == "__main__":
-        feature = FeatureImplementation()
-        result = feature.execute()
-        print(result)
-    '''
-    
-    def _fallback_code(self, file_type: str, description: str) -> str:
-        """Generate simple fallback code when Claude fails"""
-        if file_type == "python":
-            return f'''"""
-    {description} module
-    Generated by Tiny Backspace AI Agent
-    """
-
-    import logging
-    import sys
-    from typing import Any, Optional
-
-    # Configure logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
-    class ErrorHandler:
-        """Simple error handling utility"""
-        
-        @staticmethod
-        def handle_error(error: Exception, context: str = "Unknown") -> None:
-            """Handle errors gracefully with logging"""
-            logger.error(f"Error in {{context}}: {{str(error)}}")
-            
-        @staticmethod
-        def safe_execute(func, *args, **kwargs) -> Optional[Any]:
-            """Execute function safely with error handling"""
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                ErrorHandler.handle_error(e, func.__name__)
-                return None
-
-    if __name__ == "__main__":
-        print("Error handling module loaded successfully!")
-    '''
-        else:
-            return f'// {description}\n// Generated by Tiny Backspace AI Agent\n\nconsole.log("Feature implemented!");'
-    
-    def _validate_planned_changes(self, changes: List[Dict], analysis: Dict) -> List[Dict]:
-        """Validate and enhance planned changes"""
-        validated = []
-        
-        for change in changes:
-            # Ensure required fields exist
-            if not all(key in change for key in ["type", "file_path", "description"]):
-                continue
-                
-            # Add missing fields
-            change.setdefault("reasoning", "AI-generated change")
-            change.setdefault("priority", "medium")
-            change.setdefault("content", "")
-            
-            validated.append(change)
-        
-        return validated
+            # Generic fallback based on prompt content
+            return [
+                {
+                    "type": "create_file",
+                    "file_path": "main.py",
+                    "description": f"Main implementation for {prompt}",
+                    "reasoning": "Primary implementation file",
+                    "content": f'"""{prompt}"""\n\ndef main():\n    """Main function for {prompt}"""\n    print("Implementation ready")\n\nif __name__ == "__main__":\n    main()',
+                    "priority": "high"
+                },
+                {
+                    "type": "create_file",
+                    "file_path": "utils.py",
+                    "description": f"Utility functions for {prompt}",
+                    "reasoning": "Helper utilities",
+                    "content": f'"""Utilities for {prompt}"""\n\ndef helper_function():\n    """Helper function"""\n    pass',
+                    "priority": "medium"
+                }
+            ]
