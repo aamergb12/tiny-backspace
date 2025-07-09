@@ -21,7 +21,7 @@ I used Claude 3.5 Sonnet with Modal cloud containers for secure execution. The a
 
 ### Prerequisites
 - Python 3.9+
-- Node.js 18+
+- Node.js 20+
 - Anthropic API key
 - GitHub personal access token
 - Modal account (for cloud sandboxing)
