@@ -308,18 +308,6 @@ class EnhancedCodingAgentTelemetry:
             return 'game'
         else:
             return 'general'
-        """Detect project type from prompt"""
-        prompt_lower = prompt.lower()
-        if 'fastapi' in prompt_lower or 'api' in prompt_lower:
-            return 'web_api'
-        elif 'data science' in prompt_lower or 'analysis' in prompt_lower:
-            return 'data_science'
-        elif 'react' in prompt_lower or 'component' in prompt_lower:
-            return 'frontend'
-        elif 'game' in prompt_lower:
-            return 'game'
-        else:
-            return 'general'
     
     def finish_coding_session(self, success: bool, pr_url: str = None):
         """Complete session with comprehensive metrics"""
